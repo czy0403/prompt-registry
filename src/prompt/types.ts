@@ -1,8 +1,6 @@
 export type VersionContentInput = {
   content: unknown;
   model_config: Record<string, unknown>;
-  input_schema?: Record<string, unknown> | null | undefined;
-  output_schema?: Record<string, unknown> | null | undefined;
   commit_message?: string | null | undefined;
 };
 

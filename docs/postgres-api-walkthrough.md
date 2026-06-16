@@ -10,6 +10,16 @@
 
 ```bash
 cp .env.example .env
+
+POSTGRES_PASSWORD=$(openssl rand -hex 32)
+ADMIN_API_TOKEN=$(openssl rand -hex 32)
+ADMIN_ACTOR_ID=$(node -e "console.log(crypto.randomUUID())")
+
+sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$POSTGRES_PASSWORD|" .env
+sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgres://prompt_registry:$POSTGRES_PASSWORD@localhost:5432/prompt_registry|" .env
+sed -i "s|^ADMIN_API_TOKEN=.*|ADMIN_API_TOKEN=$ADMIN_API_TOKEN|" .env
+sed -i "s|^ADMIN_ACTOR_ID=.*|ADMIN_ACTOR_ID=$ADMIN_ACTOR_ID|" .env
+
 docker compose up -d postgres
 npm install
 npm run db:migrate
@@ -20,20 +30,67 @@ npm run dev
 先执行一次 `docker compose down -v`，再重新 `up`，否则数据库里的用户和库名
 不会自动切到新的 `prompt_registry`。
 
+同理，如果你修改了 `.env` 中的 `POSTGRES_USER`、`POSTGRES_PASSWORD` 或
+`POSTGRES_DB`，已有 Docker volume 也不会自动更新初始化凭证。本地开发可以用
+`docker compose down -v` 丢弃旧数据后重新初始化。
+
 终端 2：
 
 ```bash
-PROJECT_ID=11111111-1111-4111-8111-111111111111
-USER_ID=22222222-2222-4222-8222-222222222222
-BASE_URL=http://localhost:3000
+# 从可信的本地 .env 加载并导出变量，避免在终端历史中输入真实 Token
+set -a
+source .env
+set +a
 
-PG='docker compose exec -T postgres psql -U prompt_registry -d prompt_registry'
+BASE_URL=http://localhost:3000
+ADMIN_AUTH="Authorization: Bearer $ADMIN_API_TOKEN"
+
+PG="docker compose exec -T postgres psql -U $POSTGRES_USER -d $POSTGRES_DB"
+```
+
+Shell 历史只会记录上面的变量引用，不会记录 `.env` 中的真实
+`ADMIN_API_TOKEN` 和 `POSTGRES_PASSWORD`。仅应 `source` 自己信任的 `.env`
+文件，因为该命令会执行文件中的 Shell 内容。实操结束后可以清理当前终端中的
+敏感变量：
+
+```bash
+unset POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABASE_URL
+unset ADMIN_API_TOKEN ADMIN_AUTH PROJECT_API_TOKEN
+```
+
+继续操作前，确认终端 1 中的 `npm run dev` 仍在运行：
+
+```bash
+curl --fail-with-body -sS "$BASE_URL/health"
+```
+
+正常情况下会返回 `{"status":"ok"}`。如果显示无法连接，请回到终端 1 重新运行
+`npm run dev`。
+
+先创建项目并保存项目 ID：
+
+```bash
+PROJECT_RESPONSE=$(curl --fail-with-body -sS -X POST \
+  "$BASE_URL/api/v1/projects" \
+  -H "$ADMIN_AUTH" \
+  -H "content-type: application/json" \
+  -d '{"name":"Prompt walkthrough"}')
+
+PROJECT_ID=$(printf '%s' "$PROJECT_RESPONSE" | node -pe \
+  'JSON.parse(require("fs").readFileSync(0, "utf8")).id')
+```
+
+列出所有项目
+
+```bash
+curl --fail-with-body -sS "$BASE_URL/api/v1/projects" \
+  -H "$ADMIN_AUTH" | jq
 ```
 
 如果宿主机装了 `psql`，也可以这样写：
 
 ```bash
-PG='psql "postgres://prompt_registry:prompt_registry@localhost:5432/prompt_registry"'
+PG="psql $DATABASE_URL"
 ```
 
 ## 常用查询
@@ -77,18 +134,20 @@ ORDER BY created_at DESC;
 
 - `type = text` 时，`content` 是字符串
 - `type = chat` 时，`content` 是消息数组
+- `content` 里可以使用 `{{variable}}` 变量，接口会返回自动提取的
+  `variables`
 
 创建一个 `text` Prompt：
 
 ```bash
 curl -X POST "$BASE_URL/api/v1/projects/$PROJECT_ID/prompts" \
   -H "content-type: application/json" \
-  -H "x-user-id: $USER_ID" \
+  -H "$ADMIN_AUTH" \
   -d '{
     "prompt_key": "summary-text",
     "name": "Summary Text",
     "type": "text",
-    "content": "Summarize the following content in 3 bullet points.",
+    "content": "Summarize the following content in {{bullet_count}} bullet points:\n\n{{article}}",
     "commit_message": "Initial text prompt"
   }'
 ```
@@ -123,6 +182,20 @@ ORDER BY version;
 - `type` 在 `prompt` 表
 - `content` 在 `prompt_version` 表
 - `text` 的 `content` 看起来像 JSON 字符串
+- 版本详情接口会返回 `variables = ["bullet_count", "article"]`
+
+```bash
+TEXT_PROMPT_ID=$($PG -t -A -c "
+SELECT id
+FROM prompt
+WHERE project_id = '$PROJECT_ID'
+  AND prompt_key = 'summary-text';
+")
+
+curl --fail-with-body -sS \
+  "$BASE_URL/api/v1/prompts/$TEXT_PROMPT_ID/versions/1" \
+  -H "$ADMIN_AUTH" | jq '.variables'
+```
 
 ## 主流程
 
@@ -133,12 +206,15 @@ ORDER BY version;
 ```bash
 curl -X POST "$BASE_URL/api/v1/projects/$PROJECT_ID/prompts" \
   -H "content-type: application/json" \
-  -H "x-user-id: $USER_ID" \
+  -H "$ADMIN_AUTH" \
   -d '{
     "prompt_key": "customer-answer",
     "name": "Customer Answer",
     "type": "chat",
-    "content": [{"role": "system", "content": "You are a support assistant."}],
+    "content": [
+      {"role": "system", "content": "You are a support assistant. Use a {{tone}} tone."},
+      {"role": "user", "content": "{{question}}"}
+    ],
     "model_config": {"temperature": 0.2},
     "commit_message": "Initial version"
   }'
@@ -192,14 +268,61 @@ WHERE project_id = '$PROJECT_ID'
 echo "$PROMPT_ID"
 ```
 
+创建供业务项目读取的 Project API Token：
+
+```bash
+PROJECT_API_TOKEN=$(curl -s -X POST \
+  "$BASE_URL/api/v1/projects/$PROJECT_ID/api-tokens" \
+  -H "$ADMIN_AUTH" \
+  -H "content-type: application/json" \
+  -d '{"name":"walkthrough-client-production"}' | node -pe \
+  'JSON.parse(require("fs").readFileSync(0, "utf8")).token')
+```
+
+Token 明文只在创建响应中返回一次。此时 `customer-answer` 只有自动维护的
+`latest` 标签，还不能通过公开接口读取；现在调用会得到
+`Published prompt not found.`。完成下面第 3 步的 `production` 发布后，再这样
+读取：
+
+```bash
+curl "$BASE_URL/api/public/v1/prompts/customer-answer" \
+  -H "Authorization: Bearer $PROJECT_API_TOKEN"
+```
+
+返回中会包含变量列表：
+
+```json
+"variables": ["tone", "question"]
+```
+
+每个项目最多有 20 个有效 Token，有效 Token 名称不能重复。默认列表只显示
+有效 Token：
+
+```bash
+curl --fail-with-body -sS \
+  "$BASE_URL/api/v1/projects/$PROJECT_ID/api-tokens" \
+  -H "$ADMIN_AUTH" | jq
+```
+
+需要查看包含已吊销 Token 的历史时：
+
+```bash
+curl --fail-with-body -sS \
+  "$BASE_URL/api/v1/projects/$PROJECT_ID/api-tokens?include_revoked=true" \
+  -H "$ADMIN_AUTH" | jq
+```
+
 ### 2. 创建新版本
 
 ```bash
 curl -X POST "$BASE_URL/api/v1/prompts/$PROMPT_ID/versions" \
   -H "content-type: application/json" \
-  -H "x-user-id: $USER_ID" \
+  -H "$ADMIN_AUTH" \
   -d '{
-    "content": [{"role": "system", "content": "You are a concise support assistant."}],
+    "content": [
+      {"role": "system", "content": "You are a concise support assistant. Use a {{tone}} tone."},
+      {"role": "user", "content": "{{question}}"}
+    ],
     "model_config": {"temperature": 0.1},
     "commit_message": "Make answers concise"
   }'
@@ -236,7 +359,7 @@ ORDER BY pl.label;
 ```bash
 curl -X PUT "$BASE_URL/api/v1/prompts/$PROMPT_ID/labels/production" \
   -H "content-type: application/json" \
-  -H "x-user-id: $USER_ID" \
+  -H "$ADMIN_AUTH" \
   -d '{
     "version": 2,
     "expected_current_version": null,
@@ -274,7 +397,7 @@ ORDER BY created_at DESC;
 ```bash
 curl -X POST "$BASE_URL/api/v1/prompts/$PROMPT_ID/labels/production/rollback" \
   -H "content-type: application/json" \
-  -H "x-user-id: $USER_ID" \
+  -H "$ADMIN_AUTH" \
   -d '{
     "version": 1,
     "expected_current_version": 2,
@@ -314,7 +437,7 @@ ORDER BY created_at DESC;
 
 ```bash
 curl -X DELETE "$BASE_URL/api/v1/prompts/$PROMPT_ID" \
-  -H "x-user-id: $USER_ID" \
+  -H "$ADMIN_AUTH" \
   -i
 ```
 
@@ -343,21 +466,30 @@ WHERE id = '$PROMPT_ID';
 
 ### 方式 1：只清数据，保留表结构
 
-适合继续在当前数据库里反复练习。
+适合继续在当前数据库里反复练习。`project` 是业务数据的顶层表，
+`CASCADE` 会同时清空它关联的 Project API Token、Prompt、版本、标签和历史，
+但保留 `schema_migration`、表结构、索引与触发器。
 
 ```bash
-# 清空业务数据，保留表结构
+# 清空全部业务数据，保留表结构和迁移记录
 $PG -c "
-TRUNCATE TABLE prompt_label_history, prompt_label, prompt_version, prompt CASCADE;
+TRUNCATE TABLE project CASCADE;
 "
 ```
 
 清完后可以快速确认：
 
 ```bash
-# 确认 prompt 表已经为空
-docker compose exec -T postgres psql -U prompt_registry -d prompt_registry -c "
-SELECT * FROM prompt;
+# 业务表应全部为 0，schema_migration 仍保留已执行的迁移
+$PG -c "
+SELECT 'project' AS table_name, count(*) FROM project
+UNION ALL SELECT 'project_api_token', count(*) FROM project_api_token
+UNION ALL SELECT 'prompt', count(*) FROM prompt
+UNION ALL SELECT 'prompt_version', count(*) FROM prompt_version
+UNION ALL SELECT 'prompt_label', count(*) FROM prompt_label
+UNION ALL SELECT 'prompt_label_history', count(*) FROM prompt_label_history
+UNION ALL SELECT 'schema_migration', count(*) FROM schema_migration
+ORDER BY table_name;
 "
 ```
 

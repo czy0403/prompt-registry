@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type pg from "pg";
-import { loadConfig } from "../config.js";
+import { loadDatabaseUrl } from "../config.js";
 import { createPool } from "./pool.js";
 
 export async function runMigrations(pool: pg.Pool): Promise<void> {
@@ -46,7 +46,7 @@ export async function runMigrations(pool: pg.Pool): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const pool = createPool(loadConfig().DATABASE_URL);
+  const pool = createPool(loadDatabaseUrl());
   try {
     await runMigrations(pool);
     console.log("Database migrations applied.");

@@ -8,6 +8,7 @@ import type {
   MoveLabelInput,
   VersionContentInput,
 } from "./types.js";
+import { extractVariables, validateTemplateVariables } from "./variables.js";
 
 type PromptRow = {
   id: string;
@@ -25,11 +26,10 @@ type PromptRow = {
 type PromptVersionRow = {
   id: string;
   prompt_id: string;
+  prompt_type: "text" | "chat";
   version: number;
   content: unknown;
   model_config: Record<string, unknown>;
-  input_schema: Record<string, unknown> | null;
-  output_schema: Record<string, unknown> | null;
   commit_message: string | null;
   created_by: string;
   created_at: Date;
@@ -54,6 +54,8 @@ export class PromptService {
     const promptId = randomUUID();
     const versionId = randomUUID();
     this.validateContent(input.type, input.content);
+    validateTemplateVariables(input.type, input.content);
+    await this.assertActiveProject(input.project_id);
 
     await withTransaction(this.pool, async (client) => {
       await client.query(
@@ -110,6 +112,7 @@ export class PromptService {
     promptId: string,
     input: { name?: string | undefined; description?: string | undefined },
   ) {
+    await this.assertActivePrompt(promptId);
     const assignments: string[] = [];
     const values: unknown[] = [];
     if (input.name !== undefined) {
@@ -136,6 +139,7 @@ export class PromptService {
   }
 
   async archivePrompt(promptId: string) {
+    await this.assertActivePrompt(promptId);
     const result = await this.pool.query<PromptRow>(
       `UPDATE prompt
        SET archived_at = COALESCE(archived_at, now()), updated_at = now()
@@ -160,6 +164,7 @@ export class PromptService {
     await withTransaction(this.pool, async (client) => {
       const prompt = await this.lockActivePrompt(client, promptId);
       this.validateContent(prompt.type, input.content);
+      validateTemplateVariables(prompt.type, input.content);
 
       const versionResult = await client.query<{ next_version: number }>(
         `SELECT COALESCE(MAX(version), 0) + 1 AS next_version
@@ -197,26 +202,28 @@ export class PromptService {
   async listVersions(promptId: string) {
     await this.getPromptRow(this.pool, promptId);
     const result = await this.pool.query<PromptVersionRow>(
-      `SELECT *
-       FROM prompt_version
-       WHERE prompt_id = $1
-       ORDER BY version DESC`,
+      `SELECT pv.*, p.type AS prompt_type
+       FROM prompt_version pv
+       JOIN prompt p ON p.id = pv.prompt_id
+       WHERE pv.prompt_id = $1
+       ORDER BY pv.version DESC`,
       [promptId],
     );
-    return result.rows;
+    return result.rows.map((row) => this.withVariables(row));
   }
 
   async getVersion(promptId: string, version: number) {
     const result = await this.pool.query<PromptVersionRow>(
-      `SELECT *
-       FROM prompt_version
-       WHERE prompt_id = $1 AND version = $2`,
+      `SELECT pv.*, p.type AS prompt_type
+       FROM prompt_version pv
+       JOIN prompt p ON p.id = pv.prompt_id
+       WHERE pv.prompt_id = $1 AND pv.version = $2`,
       [promptId, version],
     );
     if (!result.rows[0]) {
       throw notFound("Prompt version not found.");
     }
-    return result.rows[0];
+    return this.withVariables(result.rows[0]);
   }
 
   async diffVersions(promptId: string, baseVersion: number, targetVersion: number) {
@@ -230,8 +237,6 @@ export class PromptService {
       target_version: targetVersion,
       content: diffJson(base.content, target.content),
       model_config: diffJson(base.model_config, target.model_config),
-      input_schema: diffJson(base.input_schema, target.input_schema),
-      output_schema: diffJson(base.output_schema, target.output_schema),
     };
   }
 
@@ -356,7 +361,11 @@ export class PromptService {
 
   private async lockActivePrompt(client: pg.PoolClient, promptId: string) {
     const prompt = await client.query<PromptRow>(
-      "SELECT * FROM prompt WHERE id = $1 FOR UPDATE",
+      `SELECT p.*
+       FROM prompt p
+       JOIN project project ON project.id = p.project_id
+       WHERE p.id = $1 AND project.archived_at IS NULL
+       FOR UPDATE OF p`,
       [promptId],
     );
     const row = prompt.rows[0];
@@ -369,6 +378,31 @@ export class PromptService {
     return row;
   }
 
+  private async assertActiveProject(projectId: string) {
+    const result = await this.pool.query(
+      "SELECT 1 FROM project WHERE id = $1 AND archived_at IS NULL",
+      [projectId],
+    );
+    if (!result.rows[0]) {
+      throw notFound("Active project not found.");
+    }
+  }
+
+  private async assertActivePrompt(promptId: string) {
+    const result = await this.pool.query(
+      `SELECT 1
+       FROM prompt p
+       JOIN project project ON project.id = p.project_id
+       WHERE p.id = $1
+         AND p.archived_at IS NULL
+         AND project.archived_at IS NULL`,
+      [promptId],
+    );
+    if (!result.rows[0]) {
+      throw notFound("Active prompt not found.");
+    }
+  }
+
   private async insertVersion(
     client: pg.PoolClient,
     versionId: string,
@@ -379,17 +413,14 @@ export class PromptService {
   ) {
     await client.query(
       `INSERT INTO prompt_version (
-         id, prompt_id, version, content, model_config, input_schema,
-         output_schema, commit_message, created_by
-       ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9)`,
+         id, prompt_id, version, content, model_config, commit_message, created_by
+       ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)`,
       [
         versionId,
         promptId,
         version,
         asJson(input.content),
         asJson(input.model_config),
-        input.input_schema == null ? null : asJson(input.input_schema),
-        input.output_schema == null ? null : asJson(input.output_schema),
         input.commit_message ?? null,
         actorId,
       ],
@@ -468,5 +499,13 @@ export class PromptService {
     if (type === "chat" && !Array.isArray(content)) {
       throw badRequest("Chat prompt content must be an array of messages.");
     }
+  }
+
+  private withVariables(row: PromptVersionRow) {
+    const { prompt_type, ...version } = row;
+    return {
+      ...version,
+      variables: extractVariables(prompt_type, row.content),
+    };
   }
 }

@@ -7,18 +7,22 @@
 
 ## 先抓住 5 个关键词
 
-- `project_id`：Prompt 属于哪个项目，比如 `project-a`
+- `project_id`：Prompt 属于哪个项目，对应 `project.id`
 - `prompt_key`：Prompt 在项目内的唯一标识，比如 `customer-answer`
 - `name`：prompt的名称(也可与prompt_key一致)，比如 `Customer Answer`
 - `version`：Prompt 内容的版本号，比如 `1`、`2`、`3`
 - `label`：指向某个版本的别名，比如 `latest`、`production`
+- `variables`：从 Prompt 内容里的 `{{variable}}` 自动提取出的变量名
 
 ## 一张表看懂
 
 | 字段 | 所在表 | 用途 | 可以理解成 |
 | --- | --- | --- | --- |
 | `id` | 多张表 | 数据库主键 | 内部唯一 ID |
+| `name` / `description` | `project` | 项目展示信息 | 项目名称和说明 |
 | `project_id` | `prompt` | 区分项目 | 项目空间 |
+| `token_hash` | `project_api_token` | 验证业务项目 Token | 不可逆 Token 摘要 |
+| `revoked_at` | `project_api_token` | Token 是否已吊销 | 失效时间 |
 | `prompt_key` | `prompt` | 区分同一项目里的 Prompt | 稳定业务键 |
 | `name` | `prompt` | 展示名称 | 标题 |
 | `description` | `prompt` | 补充说明 | 备注 |
@@ -26,6 +30,7 @@
 | `version` | `prompt_version` | 第几个版本 | 内容版本号 |
 | `content` | `prompt_version` | Prompt 正文 | 版本内容 |
 | `model_config` | `prompt_version` | 模型参数 | 版本配置 |
+| `variables` | 接口返回字段 | 模板变量名 | 业务调用时要填的值 |
 | `commit_message` | `prompt_version` | 这次改了什么 | 版本说明 |
 | `label` | `prompt_label` | 指向某个版本 | 别名 |
 | `revision` | `prompt_label` | label 改过几次 | 标签修订号 |
@@ -44,7 +49,7 @@
 
 ### `project_id` 和 `prompt_key`
 
-- `project_id` 决定它属于哪个项目
+- `project_id` 决定它属于哪个真实存在的项目
 - `prompt_key` 决定它在该项目里是哪条 Prompt
 
 这也是为什么数据库约束是：
@@ -54,6 +59,19 @@ UNIQUE (project_id, prompt_key)
 ```
 
 不是全局唯一，而是“项目内唯一”。
+
+### 管理员 Token 和 Project API Token
+
+- 管理员 Token 来自环境变量，可以调用全部 `/api/v1/**` 管理接口
+- Project API Token 由管理员创建，只能读取绑定项目中通过标签发布的 Prompt
+
+Project API Token 的明文只在创建时返回一次。数据库只保存哈希值，Token
+列表只显示名称、前缀、最后使用时间和吊销状态。
+
+- 每个项目最多有 20 个有效 Token
+- 同一项目中的有效 Token 名称不能重复
+- 默认列表只返回有效 Token
+- 使用 `include_revoked=true` 可以查看已吊销 Token 的历史
 
 ### `prompt_key` 和 `name`
 
@@ -76,6 +94,26 @@ UNIQUE (project_id, prompt_key)
 - 内容演进
 - 发布指向
 - 标签变更次数
+
+### `content` 和 `variables`
+
+Prompt 内容可以写成模板：
+
+```text
+请用 {{tone}} 的语气回答问题：{{question}}
+```
+
+系统会自动提取变量：
+
+```json
+["tone", "question"]
+```
+
+变量名必须以英文字母开头，只能包含英文字母、数字和下划线。例如
+`{{question}}`、`{{user_name1}}` 是合法的，`{{user.name}}`、
+`{{user-name}}`、`{{}}` 是非法的。
+
+`variables` 不单独存表，而是根据版本 `content` 动态计算后返回。
 
 ## 为什么 `content` 不在 `prompt` 表里
 
@@ -113,6 +151,7 @@ UNIQUE (project_id, prompt_key)
 - `project_id = project-a`
 - `prompt_key = customer-answer`
 - `name = Customer Answer`
+- `content = "请回答：{{question}}"`
 
 它可能有这些版本：
 
@@ -129,6 +168,7 @@ UNIQUE (project_id, prompt_key)
 
 - 最新编辑结果是版本 3
 - 线上正在用的是版本 2
+- 业务项目读取该版本时，会看到 `variables = ["question"]`
 
 如果要回滚，本质上不是修改某个版本的内容，
 而是把 `production` 这个 label 指回之前稳定的版本，
@@ -138,5 +178,6 @@ UNIQUE (project_id, prompt_key)
 
 - 表结构：[migrations/001_prompt_registry.sql](../migrations/001_prompt_registry.sql)
 - 不可变版本触发器：[migrations/002_immutable_prompt_versions.sql](../migrations/002_immutable_prompt_versions.sql)
+- Migration 设计说明：[docs/schema-migrations.md](./schema-migrations.md)
 - 路由：[src/prompt/routes.ts](../src/prompt/routes.ts)
 - 核心逻辑：[src/prompt/service.ts](../src/prompt/service.ts)

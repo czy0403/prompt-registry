@@ -1,6 +1,5 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { unauthorized } from "../lib/errors.js";
 import {
   createPromptSchema,
   createVersionSchema,
@@ -21,25 +20,17 @@ const versionParams = z.object({
 });
 const labelParams = z.object({ promptId: uuidSchema, label: labelSchema });
 
-function actorId(request: FastifyRequest): string {
-  const value = request.headers["x-user-id"];
-  const parsed = uuidSchema.safeParse(Array.isArray(value) ? value[0] : value);
-  if (!parsed.success) {
-    throw unauthorized();
-  }
-  return parsed.data;
-}
-
 export function registerPromptRoutes(
   app: FastifyInstance,
   service: PromptService,
+  actorId: string,
 ): void {
   app.post("/api/v1/projects/:projectId/prompts", async (request, reply) => {
     const { projectId } = projectIdParams.parse(request.params);
     const body = createPromptSchema.parse(request.body);
     const prompt = await service.createPrompt(
       { ...body, project_id: projectId },
-      actorId(request),
+      actorId,
     );
     return reply.code(201).send(prompt);
   });
@@ -57,13 +48,11 @@ export function registerPromptRoutes(
 
   app.patch("/api/v1/prompts/:promptId", async (request) => {
     const { promptId } = promptIdParams.parse(request.params);
-    actorId(request);
     return service.updatePrompt(promptId, updatePromptSchema.parse(request.body));
   });
 
   app.delete("/api/v1/prompts/:promptId", async (request, reply) => {
     const { promptId } = promptIdParams.parse(request.params);
-    actorId(request);
     await service.archivePrompt(promptId);
     return reply.code(204).send();
   });
@@ -73,7 +62,7 @@ export function registerPromptRoutes(
     const version = await service.createVersion(
       promptId,
       createVersionSchema.parse(request.body),
-      actorId(request),
+      actorId,
     );
     return reply.code(201).send(version);
   });
@@ -109,7 +98,7 @@ export function registerPromptRoutes(
       prompt_id: promptId,
       label,
       ...body,
-      actor_id: actorId(request),
+      actor_id: actorId,
       action: "publish",
     });
   });
@@ -123,7 +112,7 @@ export function registerPromptRoutes(
         prompt_id: promptId,
         label,
         ...body,
-        actor_id: actorId(request),
+        actor_id: actorId,
         action: "rollback",
       });
     },

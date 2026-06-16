@@ -22,6 +22,6 @@ export function badRequest(message: string, details?: unknown): AppError {
   return new AppError(400, "bad_request", message, details);
 }
 
-export function unauthorized(message = "A valid x-user-id header is required."): AppError {
+export function unauthorized(message = "Authentication is required."): AppError {
   return new AppError(401, "unauthorized", message);
 }

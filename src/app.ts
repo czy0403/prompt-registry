@@ -1,18 +1,34 @@
 import Fastify from "fastify";
 import type pg from "pg";
 import { ZodError } from "zod";
+import { assertAdmin, type AdminAuthConfig } from "./auth.js";
 import { AppError } from "./lib/errors.js";
+import { registerProjectRoutes } from "./project/routes.js";
+import { ProjectService } from "./project/service.js";
 import { registerPromptRoutes } from "./prompt/routes.js";
 import { PromptService } from "./prompt/service.js";
+import { registerPublicRoutes } from "./public/routes.js";
 
 type PgError = Error & { code?: string; constraint?: string };
 
-export function buildApp(pool: pg.Pool, logger: boolean | object = true) {
+export function buildApp(
+  pool: pg.Pool,
+  auth: AdminAuthConfig,
+  logger: boolean | object = true,
+) {
   const app = Fastify({ logger });
   const promptService = new PromptService(pool);
+  const projectService = new ProjectService(pool);
 
   app.get("/health", async () => ({ status: "ok" }));
-  registerPromptRoutes(app, promptService);
+  app.addHook("onRequest", async (request) => {
+    if (request.url.startsWith("/api/v1/")) {
+      assertAdmin(request, auth.adminApiToken);
+    }
+  });
+  registerProjectRoutes(app, projectService);
+  registerPromptRoutes(app, promptService, auth.adminActorId);
+  registerPublicRoutes(app, pool);
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {

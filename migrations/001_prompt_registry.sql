@@ -29,8 +29,6 @@ CREATE TABLE prompt_version (
     version         integer NOT NULL CHECK (version > 0),
     content         jsonb NOT NULL,
     model_config    jsonb NOT NULL DEFAULT '{}',
-    input_schema    jsonb,
-    output_schema   jsonb,
     commit_message  text,
     created_by      uuid NOT NULL,
     created_at      timestamptz NOT NULL DEFAULT now(),

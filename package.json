@@ -6,10 +6,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx watch src/server.ts",
-    "start": "node dist/src/server.js",
-    "db:migrate": "tsx src/db/migrate.ts",
-    "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts"
+    "dev": "node --env-file-if-exists=.env --import tsx --watch src/server.ts",
+    "start": "node --env-file-if-exists=.env dist/src/server.js",
+    "db:migrate": "node --env-file-if-exists=.env --import tsx src/db/migrate.ts",
+    "test": "node --env-file-if-exists=.env --import tsx --test --test-concurrency=1 test/*.test.ts"
   },
   "engines": {
     "node": ">=22"

@@ -19,10 +19,8 @@ export const versionContentSchema = z.object({
     message: "Content is required.",
   }),
   model_config: jsonObjectSchema.default({}),
-  input_schema: jsonObjectSchema.nullable().optional(),
-  output_schema: jsonObjectSchema.nullable().optional(),
   commit_message: z.string().max(2000).nullable().optional(),
-});
+}).strict();
 
 export const createPromptSchema = z
   .object({
@@ -32,6 +30,7 @@ export const createPromptSchema = z
     type: z.enum(["text", "chat"]),
   })
   .extend(versionContentSchema.shape)
+  .strict()
   .superRefine((value, context) => {
     if (value.type === "text" && typeof value.content !== "string") {
       context.addIssue({
