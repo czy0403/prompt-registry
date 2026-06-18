@@ -57,6 +57,11 @@ export function registerPromptRoutes(
     return reply.code(204).send();
   });
 
+  app.delete("/api/v1/prompts/:promptId/permanent", async (request) => {
+    const { promptId } = promptIdParams.parse(request.params);
+    return service.permanentlyDeleteArchivedPrompt(promptId);
+  });
+
   app.post("/api/v1/prompts/:promptId/versions", async (request, reply) => {
     const { promptId } = promptIdParams.parse(request.params);
     const version = await service.createVersion(

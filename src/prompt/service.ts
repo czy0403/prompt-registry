@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import { withTransaction } from "../db/transaction.js";
 import { badRequest, conflict, notFound } from "../lib/errors.js";
+import { hasUnsupportedControlChars } from "../lib/input-validation.js";
 import { diffJson } from "../lib/json-diff.js";
 import type {
   CreatePromptInput,
@@ -151,6 +152,47 @@ export class PromptService {
       throw notFound("Prompt not found.");
     }
     return result.rows[0];
+  }
+
+  async permanentlyDeleteArchivedPrompt(promptId: string) {
+    return withTransaction(this.pool, async (client) => {
+      const prompt = await client.query<PromptRow>(
+        "SELECT * FROM prompt WHERE id = $1 FOR UPDATE",
+        [promptId],
+      );
+      const row = prompt.rows[0];
+      if (!row) {
+        throw notFound("Prompt not found.");
+      }
+      if (!row.archived_at) {
+        throw conflict("Only archived prompts can be permanently deleted.");
+      }
+
+      await client.query(
+        "SELECT set_config('prompt_registry.allow_prompt_version_delete', 'on', true)",
+      );
+      const history = await client.query(
+        "DELETE FROM prompt_label_history WHERE prompt_id = $1",
+        [promptId],
+      );
+      const labels = await client.query(
+        "DELETE FROM prompt_label WHERE prompt_id = $1",
+        [promptId],
+      );
+      const versions = await client.query(
+        "DELETE FROM prompt_version WHERE prompt_id = $1",
+        [promptId],
+      );
+      await client.query("DELETE FROM prompt WHERE id = $1", [promptId]);
+
+      return {
+        prompt_id: promptId,
+        prompt_key: row.prompt_key,
+        deleted_label_history: history.rowCount ?? 0,
+        deleted_labels: labels.rowCount ?? 0,
+        deleted_versions: versions.rowCount ?? 0,
+      };
+    });
   }
 
   async createVersion(
@@ -493,11 +535,33 @@ export class PromptService {
   }
 
   private validateContent(type: "text" | "chat", content: unknown) {
-    if (type === "text" && typeof content !== "string") {
-      throw badRequest("Text prompt content must be a string.");
+    if (type === "text") {
+      if (typeof content !== "string") {
+        throw badRequest("Text prompt content must be a string.");
+      }
+      if (hasUnsupportedControlChars(content)) {
+        throw badRequest("Prompt content contains unsupported control characters.");
+      }
     }
-    if (type === "chat" && !Array.isArray(content)) {
-      throw badRequest("Chat prompt content must be an array of messages.");
+    if (type === "chat") {
+      if (!Array.isArray(content)) {
+        throw badRequest("Chat prompt content must be an array of messages.");
+      }
+      for (const message of content) {
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          !Array.isArray(message)
+        ) {
+          const record = message as Record<string, unknown>;
+          if (
+            typeof record.content === "string" &&
+            hasUnsupportedControlChars(record.content)
+          ) {
+            throw badRequest("Prompt content contains unsupported control characters.");
+          }
+        }
+      }
     }
   }
 

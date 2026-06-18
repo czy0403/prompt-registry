@@ -99,6 +99,60 @@ export class ProjectService {
     }
   }
 
+  async permanentlyDeleteArchivedProject(projectId: string) {
+    return withTransaction(this.pool, async (client) => {
+      const project = await client.query<ProjectRow>(
+        "SELECT * FROM project WHERE id = $1 FOR UPDATE",
+        [projectId],
+      );
+      const row = project.rows[0];
+      if (!row) {
+        throw notFound("Project not found.");
+      }
+      if (!row.archived_at) {
+        throw conflict("Only archived projects can be permanently deleted.");
+      }
+
+      await client.query(
+        "SELECT set_config('prompt_registry.allow_prompt_version_delete', 'on', true)",
+      );
+      const history = await client.query(
+        `DELETE FROM prompt_label_history
+         WHERE prompt_id IN (SELECT id FROM prompt WHERE project_id = $1)`,
+        [projectId],
+      );
+      const labels = await client.query(
+        `DELETE FROM prompt_label
+         WHERE prompt_id IN (SELECT id FROM prompt WHERE project_id = $1)`,
+        [projectId],
+      );
+      const versions = await client.query(
+        `DELETE FROM prompt_version
+         WHERE prompt_id IN (SELECT id FROM prompt WHERE project_id = $1)`,
+        [projectId],
+      );
+      const prompts = await client.query(
+        "DELETE FROM prompt WHERE project_id = $1",
+        [projectId],
+      );
+      const tokens = await client.query(
+        "DELETE FROM project_api_token WHERE project_id = $1",
+        [projectId],
+      );
+      await client.query("DELETE FROM project WHERE id = $1", [projectId]);
+
+      return {
+        project_id: projectId,
+        name: row.name,
+        deleted_prompts: prompts.rowCount ?? 0,
+        deleted_versions: versions.rowCount ?? 0,
+        deleted_labels: labels.rowCount ?? 0,
+        deleted_label_history: history.rowCount ?? 0,
+        deleted_api_tokens: tokens.rowCount ?? 0,
+      };
+    });
+  }
+
   private async assertActiveProject(projectId: string) {
     const result = await this.pool.query<ProjectRow>(
       "SELECT * FROM project WHERE id = $1",

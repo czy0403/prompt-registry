@@ -361,6 +361,97 @@ describe("Prompt Registry API", () => {
       ),
       /prompt versions are immutable/,
     );
+    await assert.rejects(
+      pool.query("DELETE FROM prompt_version WHERE prompt_id = $1", [prompt.id]),
+      /prompt versions are immutable/,
+    );
+  });
+
+  it("permanently deletes archived prompts only", async () => {
+    const prompt = await createPrompt();
+    await createVersion(prompt.id, "Version 2");
+    assert.equal((await publish(prompt.id, "production", 2)).statusCode, 200);
+
+    const activeDelete = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/prompts/${prompt.id}/permanent`,
+      headers: adminHeaders,
+    });
+    assert.equal(activeDelete.statusCode, 409);
+
+    const archive = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/prompts/${prompt.id}`,
+      headers: adminHeaders,
+    });
+    assert.equal(archive.statusCode, 204);
+
+    const permanent = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/prompts/${prompt.id}/permanent`,
+      headers: adminHeaders,
+    });
+    assert.equal(permanent.statusCode, 200);
+    assert.equal(permanent.json<{ deleted_versions: number }>().deleted_versions, 2);
+    assert.equal(permanent.json<{ deleted_labels: number }>().deleted_labels, 2);
+
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/v1/prompts/${prompt.id}`,
+      headers: adminHeaders,
+    });
+    assert.equal(detail.statusCode, 404);
+
+    const versions = await pool.query(
+      "SELECT count(*)::int AS count FROM prompt_version WHERE prompt_id = $1",
+      [prompt.id],
+    );
+    assert.equal(versions.rows[0]?.count, 0);
+  });
+
+  it("permanently deletes archived projects and their dependent data", async () => {
+    const prompt = await createPrompt();
+    await createVersion(prompt.id, "Version 2");
+    assert.equal((await publish(prompt.id, "production", 2)).statusCode, 200);
+    const token = await createProjectToken();
+
+    const activeDelete = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/projects/${projectId}/permanent`,
+      headers: adminHeaders,
+    });
+    assert.equal(activeDelete.statusCode, 409);
+
+    const archive = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/projects/${projectId}`,
+      headers: adminHeaders,
+    });
+    assert.equal(archive.statusCode, 204);
+
+    const permanent = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/projects/${projectId}/permanent`,
+      headers: adminHeaders,
+    });
+    assert.equal(permanent.statusCode, 200);
+    assert.equal(permanent.json<{ deleted_prompts: number }>().deleted_prompts, 1);
+    assert.equal(permanent.json<{ deleted_versions: number }>().deleted_versions, 2);
+    assert.equal(permanent.json<{ deleted_api_tokens: number }>().deleted_api_tokens, 1);
+
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/v1/projects/${projectId}`,
+      headers: adminHeaders,
+    });
+    assert.equal(detail.statusCode, 404);
+
+    const publicRead = await app.inject({
+      method: "GET",
+      url: "/api/public/v1/prompts/customer-answer",
+      headers: { authorization: `Bearer ${token.token}` },
+    });
+    assert.equal(publicRead.statusCode, 401);
   });
 
   it("publishes and rolls back production with complete history", async () => {
@@ -639,6 +730,22 @@ describe("Prompt Registry API", () => {
   });
 
   it("validates prompt content, model config, prompt keys, and labels", async () => {
+    const invalidProjectName = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects",
+      headers: adminHeaders,
+      payload: { name: "1`" },
+    });
+    assert.equal(invalidProjectName.statusCode, 400);
+
+    const validLocalizedProjectName = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects",
+      headers: adminHeaders,
+      payload: { name: "客服项目 1" },
+    });
+    assert.equal(validLocalizedProjectName.statusCode, 201);
+
     const invalidTextContent = await app.inject({
       method: "POST",
       url: `/api/v1/projects/${projectId}/prompts`,
@@ -683,6 +790,46 @@ describe("Prompt Registry API", () => {
       "validation_error",
     );
 
+    const invalidPromptName = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${projectId}/prompts`,
+      headers: adminHeaders,
+      payload: {
+        prompt_key: "bad-prompt-name",
+        name: "1`",
+        type: "text",
+        content: "Hello",
+      },
+    });
+    assert.equal(invalidPromptName.statusCode, 400);
+
+    const invalidCommitMessage = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${projectId}/prompts`,
+      headers: adminHeaders,
+      payload: {
+        prompt_key: "bad-commit-message",
+        name: "Bad Commit Message",
+        type: "text",
+        content: "Hello",
+        commit_message: "bad\u0001message",
+      },
+    });
+    assert.equal(invalidCommitMessage.statusCode, 400);
+
+    const invalidPromptContentCharacter = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${projectId}/prompts`,
+      headers: adminHeaders,
+      payload: {
+        prompt_key: "bad-content-character",
+        name: "Bad Content Character",
+        type: "text",
+        content: "Hello\u0001",
+      },
+    });
+    assert.equal(invalidPromptContentCharacter.statusCode, 400);
+
     const invalidPromptKey = await app.inject({
       method: "POST",
       url: `/api/v1/projects/${projectId}/prompts`,
@@ -724,6 +871,14 @@ describe("Prompt Registry API", () => {
       payload: { version: 1, expected_current_version: null },
     });
     assert.equal(validLabel.statusCode, 200);
+
+    const invalidTokenName = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${projectId}/api-tokens`,
+      headers: adminHeaders,
+      payload: { name: "client`1" },
+    });
+    assert.equal(invalidTokenName.statusCode, 400);
   });
 
   it("shows a project token once, lists metadata, and revokes it", async () => {

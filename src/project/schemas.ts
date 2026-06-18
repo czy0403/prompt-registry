@@ -1,21 +1,26 @@
 import { z } from "zod";
+import {
+  descriptionSchema,
+  displayNameSchema,
+  tokenNameSchema,
+} from "../lib/input-validation.js";
 
 export const createProjectSchema = z.object({
-  name: z.string().min(1).max(128),
-  description: z.string().max(10_000).default(""),
+  name: displayNameSchema,
+  description: descriptionSchema.default(""),
 });
 
 export const updateProjectSchema = z
   .object({
-    name: z.string().min(1).max(128).optional(),
-    description: z.string().max(10_000).optional(),
+    name: displayNameSchema.optional(),
+    description: descriptionSchema.optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one field must be provided.",
   });
 
 export const createApiTokenSchema = z.object({
-  name: z.string().min(1).max(128),
+  name: tokenNameSchema,
 });
 
 export const listApiTokenQuerySchema = z.object({

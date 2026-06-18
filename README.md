@@ -11,19 +11,27 @@ prompt-registry 是一个聚焦 Prompt 注册、版本管理和发布读取的 M
 - 基于 `{{variable}}` 的 Prompt 变量提取
 - 结构化版本差异对比
 
-当前版本不包含运行时执行、Tracing、评测、工作流、Redis、队列或 ORM。
-
 ## 架构
 
-```text
-Fastify 模块化单体
-        |
-    PostgreSQL
+```mermaid
+flowchart LR
+  admin[管理员 / Web UI] -->|ADMIN_API_TOKEN| api[Fastify API]
+  api -->|创建 Project / Prompt / Version| db[(PostgreSQL)]
+  api -->|发布 label: production| db
+
+  api -->|记录标签历史和 Token hash| db
+
+  service[业务服务 / Python 示例] -->|Project API Token| public[/Public API/]
+  public -->|按 prompt_key + label 读取| db
+  public -->|返回 content、model_config、variables| service
+  service -->|填充模板变量| llm[LLM 请求]
 ```
 
+管理接口负责创建版本并移动发布标签；公开接口只允许业务服务通过 Project API Token
+读取已发布 `production` 标签，不能读取 `latest`。
+
 PostgreSQL 保存 Project、Prompt、版本、标签、标签历史和 Project API Token。
-事务用于串行化版本创建和标签移动；触发器保证版本不可变、标签只能指向同一条
-Prompt 的版本。
+事务用于串行化版本创建和标签移动；触发器保证版本不可变、标签只能指向同一条Prompt 的版本。
 
 ## 本地开发
 
@@ -70,6 +78,29 @@ docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
 服务默认监听 `http://127.0.0.1:3000`。如需从容器外、局域网或反向代理访问，
 在部署环境中设置 `HOST=0.0.0.0`。
 
+## Web 管理界面
+
+服务启动后可以访问 `http://127.0.0.1:3000/ui/` 使用轻量 Web 管理界面。
+该界面由服务直接托管静态 HTML/CSS/JS，不需要额外前端构建步骤。
+
+Web 管理界面支持：
+
+- Project 创建、编辑、归档
+- Prompt 创建、编辑、归档
+- Prompt 版本创建、查看变量、查看结构化 diff
+- 标签发布、回滚和历史查看
+- Project API Token 创建、查看列表和吊销
+- 已归档 Project/Prompt 的永久删除，用于清理测试数据
+
+界面不会从服务端读取或展示 `.env` 中的 `ADMIN_API_TOKEN`。首次打开时需要手动输入
+管理员 Token；默认只保存在当前页面的 JavaScript 内存中，刷新页面后需要重新输入。
+如果勾选 “Remember in this tab”，Token 会保存到当前标签页的 `sessionStorage`，关闭
+标签页后清除。不要在不可信浏览器或公网暴露的环境中使用该管理界面。
+
+永久删除只会在资源已经归档后启用，并要求输入 Project 名称或 Prompt key 二次确认。
+该操作会删除相关版本、标签、标签历史和 Token 等依赖数据，主要用于本地测试数据清理，
+不建议用于生产审计数据。
+
 ## 认证模型
 
 - `/api/v1/**` 是管理接口，使用
@@ -88,8 +119,7 @@ docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   不接受业务请求传入 `project_id`。
 
 `ADMIN_API_TOKEN` 和 `Project API Token` 都是敏感凭证，不要提交到 Git。
-`ADMIN_ACTOR_ID` 用于审计式记录管理员创建版本、发布和回滚等操作，生成后应保持
-固定。
+`ADMIN_ACTOR_ID` 用于审计式记录管理员创建版本、发布和回滚等操作，生成后应保持固定。
 
 ## 文档
 
@@ -101,6 +131,19 @@ docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   [docs/schema-migrations.md](docs/schema-migrations.md)
 - 测试覆盖分析：
   [docs/testing-coverage.md](docs/testing-coverage.md)
+
+## 示例
+
+启动服务并准备好已发布 Prompt 和 Project API Token 后，可以运行 Python 业务读取示例：
+
+```bash
+PROMPT_REGISTRY_TOKEN='复制的 Project API Token' \
+PROMPT_KEY='customer-answer' \
+npm run example
+```
+
+示例只调用公开读取接口取回 Prompt，渲染 `{{variable}}`，并打印业务代码最终会传给
+LLM 的 prompt 内容。更多说明见 [example/README.md](example/README.md)。
 
 ## 验证
 

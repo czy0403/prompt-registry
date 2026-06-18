@@ -8,6 +8,7 @@ import { ProjectService } from "./project/service.js";
 import { registerPromptRoutes } from "./prompt/routes.js";
 import { PromptService } from "./prompt/service.js";
 import { registerPublicRoutes } from "./public/routes.js";
+import { registerUiRoutes } from "./ui/routes.js";
 
 type PgError = Error & { code?: string; constraint?: string };
 
@@ -29,6 +30,7 @@ export function buildApp(
   registerProjectRoutes(app, projectService);
   registerPromptRoutes(app, promptService, auth.adminActorId);
   registerPublicRoutes(app, pool);
+  registerUiRoutes(app);
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {

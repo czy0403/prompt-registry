@@ -1,13 +1,20 @@
 import { z } from "zod";
+import {
+  descriptionSchema,
+  displayNameSchema,
+  optionalNoteSchema,
+} from "../lib/input-validation.js";
 
 export const uuidSchema = z.string().uuid();
 export const promptKeySchema = z
   .string()
+  .trim()
   .min(1)
   .max(128)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/);
 export const labelSchema = z
   .string()
+  .trim()
   .min(1)
   .max(64)
   .regex(/^[a-z0-9][a-z0-9._-]*$/);
@@ -19,14 +26,14 @@ export const versionContentSchema = z.object({
     message: "Content is required.",
   }),
   model_config: jsonObjectSchema.default({}),
-  commit_message: z.string().max(2000).nullable().optional(),
+  commit_message: optionalNoteSchema,
 }).strict();
 
 export const createPromptSchema = z
   .object({
     prompt_key: promptKeySchema,
-    name: z.string().min(1).max(128),
-    description: z.string().max(10_000).default(""),
+    name: displayNameSchema,
+    description: descriptionSchema.default(""),
     type: z.enum(["text", "chat"]),
   })
   .extend(versionContentSchema.shape)
@@ -50,8 +57,8 @@ export const createPromptSchema = z
 
 export const updatePromptSchema = z
   .object({
-    name: z.string().min(1).max(128).optional(),
-    description: z.string().max(10_000).optional(),
+    name: displayNameSchema.optional(),
+    description: descriptionSchema.optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one field must be provided.",
@@ -62,7 +69,7 @@ export const createVersionSchema = versionContentSchema;
 export const moveLabelSchema = z.object({
   version: z.number().int().positive(),
   expected_current_version: z.number().int().positive().nullable(),
-  reason: z.string().max(2000).nullable().optional(),
+  reason: optionalNoteSchema,
 });
 
 export const listPromptQuerySchema = z.object({

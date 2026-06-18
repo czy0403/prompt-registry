@@ -39,6 +39,11 @@ export function registerProjectRoutes(
     return reply.code(204).send();
   });
 
+  app.delete("/api/v1/projects/:projectId/permanent", async (request) => {
+    const { projectId } = projectIdParams.parse(request.params);
+    return service.permanentlyDeleteArchivedProject(projectId);
+  });
+
   app.post("/api/v1/projects/:projectId/api-tokens", async (request, reply) => {
     const { projectId } = projectIdParams.parse(request.params);
     const { name } = createApiTokenSchema.parse(request.body);
