@@ -1,3 +1,5 @@
+name: prompt-registry
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -7,15 +9,31 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
       TZ: Asia/Shanghai
-    ports:
-      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 2s
       timeout: 3s
       retries: 20
     volumes:
-      - prompt_registry_postgres:/var/lib/postgresql/data
+      - prompt_registry_prod_postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  app:
+    image: ${PROMPT_REGISTRY_IMAGE:-prompt-registry:0.1.0}
+    build:
+      context: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:?ADMIN_API_TOKEN is required}
+      ADMIN_ACTOR_ID: ${ADMIN_ACTOR_ID:?ADMIN_ACTOR_ID is required}
+      PORT: 3000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${APP_HOST_BIND:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    restart: unless-stopped
 
 volumes:
-  prompt_registry_postgres:
+  prompt_registry_prod_postgres:

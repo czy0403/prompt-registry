@@ -280,6 +280,12 @@ function setStatus(message, isError = false) {
   el.statusText.classList.toggle("error-text", isError);
 }
 
+function setLabelFeedback(message, isError = false) {
+  text(el.labelFeedback, message);
+  el.labelFeedback.classList.toggle("hidden", !message);
+  el.labelFeedback.classList.toggle("error-text", isError);
+}
+
 async function copyTextToClipboard(valueToCopy) {
   if (navigator.clipboard && window.isSecureContext) {
     try {
@@ -674,6 +680,7 @@ async function selectProject(projectId, reload = true) {
   state.versions = [];
   state.labels = [];
   state.tokens = [];
+  setLabelFeedback("");
   renderProjects();
   if (reload) {
     await loadPrompts();
@@ -683,6 +690,7 @@ async function selectProject(projectId, reload = true) {
 
 async function selectPrompt(promptId, rerenderList = true) {
   state.selectedPromptId = promptId;
+  setLabelFeedback("");
   if (rerenderList) {
     renderPrompts();
   }
@@ -867,6 +875,7 @@ async function createOrMoveLabel(action) {
   if (!state.selectedPromptId) {
     throw new Error("Select a prompt first.");
   }
+  setLabelFeedback("");
   const label = value("labelName");
   const labelMessage = validateLabelField();
   if (labelMessage) {
@@ -880,19 +889,37 @@ async function createOrMoveLabel(action) {
   );
   const version = Number(byId("labelVersion").value);
   const expected = labelVersion(label);
+  const fromVersion = expected == null ? "none" : `v${expected}`;
   const path =
     action === "rollback"
       ? `/api/v1/prompts/${state.selectedPromptId}/labels/${encodeURIComponent(label)}/rollback`
       : `/api/v1/prompts/${state.selectedPromptId}/labels/${encodeURIComponent(label)}`;
-  await api(path, {
-    method: action === "rollback" ? "POST" : "PUT",
-    body: {
-      version,
-      expected_current_version: expected,
-      reason: validatedOptionalNote("labelReason", "Reason"),
-    },
-  });
-  await loadPromptDetail();
+  el.publishLabelButton.disabled = true;
+  el.rollbackLabelButton.disabled = true;
+  try {
+    await api(path, {
+      method: action === "rollback" ? "POST" : "PUT",
+      body: {
+        version,
+        expected_current_version: expected,
+        reason: validatedOptionalNote("labelReason", "Reason"),
+      },
+    });
+    await loadPromptDetail();
+    const actionLabel = action === "rollback" ? "Rolled back" : "Published";
+    const message = expected === version
+      ? `${label} already points to v${version}.`
+      : `${actionLabel} ${label}: ${fromVersion} -> v${version}.`;
+    setLabelFeedback(message);
+    setStatus(message);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unexpected error.";
+    setLabelFeedback(message, true);
+    throw error;
+  } finally {
+    el.publishLabelButton.disabled = false;
+    el.rollbackLabelButton.disabled = false;
+  }
 }
 
 async function loadHistory() {
@@ -1041,6 +1068,7 @@ function initElements() {
     "reloadVersionsButton",
     "labelName",
     "labelReason",
+    "labelFeedback",
     "publishLabelButton",
     "rollbackLabelButton",
     "loadHistoryButton",

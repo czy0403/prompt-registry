@@ -291,6 +291,7 @@ label,
 .create-panel > .field-grid,
 .create-panel > textarea,
 .create-panel > .button-row,
+.create-panel > .action-feedback,
 .create-panel > .inline-form,
 .create-panel > .field-hint {
   margin-left: 12px;
@@ -298,6 +299,7 @@ label,
 }
 
 .create-panel > .button-row,
+.create-panel > .action-feedback,
 .create-panel > textarea,
 .create-panel > .inline-form {
   margin-bottom: 12px;
@@ -319,6 +321,22 @@ label,
 }
 
 .field-hint.error-text {
+  color: var(--danger);
+}
+
+.action-feedback {
+  border: 1px solid #a6d8b5;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--added);
+  color: #146c2e;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.action-feedback.error-text {
+  border-color: #f4b8b1;
+  background: var(--danger-bg);
   color: var(--danger);
 }
 

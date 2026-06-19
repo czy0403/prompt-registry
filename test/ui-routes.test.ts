@@ -36,6 +36,8 @@ describe("UI routes", () => {
     assert.equal(response.headers["x-content-type-options"], "nosniff");
     assert.equal(response.headers["referrer-policy"], "no-referrer");
     assert.equal(response.headers["cache-control"], "no-store");
+    assert.match(response.body, /id="labelFeedback"/);
+    assert.match(response.body, /aria-live="polite"/);
   });
 
   it("serves fixed CSS and JavaScript assets", async () => {
@@ -45,10 +47,12 @@ describe("UI routes", () => {
     assert.equal(css.statusCode, 200);
     assert.match(css.headers["content-type"] as string, /text\/css/);
     assert.match(css.body, /app-shell/);
+    assert.match(css.body, /action-feedback/);
 
     assert.equal(js.statusCode, 200);
     assert.match(js.headers["content-type"] as string, /javascript/);
     assert.match(js.body, /sessionStorage/);
+    assert.match(js.body, /setLabelFeedback/);
   });
 
   it("keeps management APIs protected while the UI shell is public", async () => {

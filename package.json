@@ -10,7 +10,10 @@
     "example": "python3 example/python-client.py",
     "start": "node --env-file-if-exists=.env dist/src/server.js",
     "db:migrate": "node --env-file-if-exists=.env --import tsx src/db/migrate.ts",
-    "test": "node --env-file-if-exists=.env --import tsx --test --test-concurrency=1 test/*.test.ts"
+    "test": "node --env-file-if-exists=.env --import tsx --test --test-concurrency=1 test/*.test.ts",
+    "test:db:up": "docker compose -f docker-compose.test.yml up -d --wait",
+    "test:db:down": "docker compose -f docker-compose.test.yml down -v",
+    "test:full": "TEST_DATABASE_URL=postgres://prompt_registry:test_password@127.0.0.1:55432/prompt_registry_test npm test"
   },
   "engines": {
     "node": ">=22"
